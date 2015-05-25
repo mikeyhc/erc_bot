@@ -1,0 +1,12 @@
+{application, erc_bot,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { erc_bot_app, []}},
+  {env, []}
+ ]}.
