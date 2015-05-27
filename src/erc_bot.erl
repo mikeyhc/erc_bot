@@ -2,11 +2,13 @@
 
 -behaviour(gen_server).
 
+-include("erc_bot.hrl").
+
 %% General API
--export([start_link/0]).
+-export([start_link/1]).
 
 %% Connection API
--export([connect/2]).
+-export([connect/2, connect/3]).
 
 %% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -14,25 +16,24 @@
 
 -define(REAL_NAME, "erc_bot").
 
--record(connection, {server_name :: binary(),
-                     status      :: connected | connecting | disconnected,
-                     nick        :: binary()}).
--type connection() :: #connection{}.
-
--record(state, {connections=#{} :: map(binary(), connection())
+-record(state, {connections=#{} :: map(binary(), connection()),
+                supervisor      :: pid()
                }).
 
 %%%%%%%%%%%%%%%%%%%
 %%% General API %%%
 %%%%%%%%%%%%%%%%%%%
 
-start_link() -> gen_server:start_link({local, erc_bot}, ?MODULE, [], []).
+start_link(SuperPid) ->
+    gen_server:start_link({local, erc_bot}, ?MODULE, SuperPid, []).
 
 %%%%%%%%%%%%%%%%%%%%%%
 %%% Connection API %%%
 %%%%%%%%%%%%%%%%%%%%%%
 
-connect(Server, Nick) -> gen_server:call(erc_bot, {connect, Server, Nick}).
+connect(Server, Nick) -> connect(Server, 6667, Nick).
+connect(Server, Port, Nick) ->
+    gen_server:call(erc_bot, {connect, Server, Port, Nick}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% state Record Functions %%%
@@ -48,39 +49,43 @@ set_connection_state(R, N, S) ->
 %%% IRC Functions %%%
 %%%%%%%%%%%%%%%%%%%%%
 
-do_connection(_Server, _Nick) -> ok.
+do_connection(Super, _Conn) ->
+    supervisor:start_child(Super, []).
+
+create_connection(Server, Port, Nick, State) ->
+    Conn = #connection{server_name = Server,
+                       port=Port,
+                       status = connecting,
+                       nick = Nick},
+    NewConns = maps:put(Server, Conn, State#state.connections),
+    do_connection(State#state.supervisor, Conn),
+    State#state{connections = NewConns}.
+
+reuse_connection(C=#connection{status=disconnected}, State) ->
+    NewState = set_connection_state(State, C, connecting),
+    do_connection(State#state.supervisor, C),
+    {ok, NewState};
+reuse_connection(_S, State) -> {{error, already_connected}, State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% gen_server Callbacks %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init(_Args) -> {ok, #state{}}.
+init(SuperPid) ->
+    {ok, #state{supervisor=SuperPid}}.
 terminate(_Reason, _State) -> ok.
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
-% server already exists
-handle_call({connect, Server, Nick}, _From, State) ->
-    Connections = State#state.connections,
-    case maps:find(Server, Connections) of
+handle_call({connect, Server, Port, Nick}, _From, State) ->
+    case maps:find(Server, State#state.connections) of
         error ->
-            Conn = #connection{server_name = Server,
-                               status = connecting,
-                               nick = Nick},
-            NewConns = maps:put(Server, Conn, Connections),
-            NewState = State#state{connections = NewConns},
-            Status = do_connection(Server, Nick),
-            {reply, Status, NewState};
-        {ok, S} ->
-            case S#connection.status of
-                disconnected ->
-                    NewState = set_connection_state(State, Server, connecting),
-                    Status = do_connection(Server, Nick),
-                    {reply, Status, NewState};
-                _ -> {reply, {error, already_connected}, State}
-            end
-    end.
-
-
+            NewState = create_connection(Server, Port, Nick, State),
+            {reply, ok, NewState};
+        {ok, Conn} ->
+            {Ret, NewState} = reuse_connection(Conn, State),
+            {reply, Ret, NewState}
+    end;
+handle_call(get_state, _From, State) -> {reply, {ok, State}, State}.
 
 handle_cast(_Request, State) -> {no_reply, State}.
 handle_info(_Request, State) -> {no_reply, State}.
