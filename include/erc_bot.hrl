@@ -1,5 +1,5 @@
--record(connection, {server_name :: binary(),
-                     port        :: integer(),
-                     status      :: connected | connecting | disconnected,
-                     nick        :: binary()}).
+-record(connection, {host    :: string(),
+                     port    :: integer(),
+                     status  :: connected | connecting | disconnected,
+                     nick    :: string()}).
 -type connection() :: #connection{}.

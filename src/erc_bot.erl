@@ -16,7 +16,7 @@
 
 -define(REAL_NAME, "erc_bot").
 
--record(state, {connections=#{} :: map(binary(), connection()),
+-record(state, {connections=#{} :: map(binary(), {pid(), connection()}),
                 supervisor      :: pid()
                }).
 
@@ -49,16 +49,17 @@ set_connection_state(R, N, S) ->
 %%% IRC Functions %%%
 %%%%%%%%%%%%%%%%%%%%%
 
-do_connection(Super, _Conn) ->
-    supervisor:start_child(Super, []).
+do_connection(Super, Conn) ->
+    {ok, Pid} = supervisor:start_child(Super, [Conn]),
+    Pid.
 
 create_connection(Server, Port, Nick, State) ->
-    Conn = #connection{server_name = Server,
-                       port=Port,
+    Conn = #connection{host = Server,
+                       port = Port,
                        status = connecting,
                        nick = Nick},
-    NewConns = maps:put(Server, Conn, State#state.connections),
-    do_connection(State#state.supervisor, Conn),
+    Pid = do_connection(State#state.supervisor, Conn),
+    NewConns = maps:put(Server, {Pid, Conn}, State#state.connections),
     State#state{connections = NewConns}.
 
 reuse_connection(C=#connection{status=disconnected}, State) ->
