@@ -6,7 +6,7 @@
 -compile([export_all]).
 
 % general api
--export([start_link/0, connect/3]).
+-export([start_link/0, connect/3, join/1]).
 
 % gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
@@ -24,6 +24,8 @@ start_link() -> gen_server:start_link({local, erc_bot}, ?MODULE, [], []).
 
 connect(Host, Port, Nick) ->
     gen_server:call(erc_bot, {connect, Host, Port, Nick}).
+
+join(Channel) -> gen_server:cast(erc_bot, {join, Channel}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% gen_server callbacks %%%
@@ -44,7 +46,10 @@ handle_call(get_state, _From, State) ->
     {reply, State, State}.
 
 handle_cast({ircmsg, Msg}, State) -> {noreply, handle_message(Msg, State)};
-handle_cast(disconnected, _State) -> {noreply, #state{}}.
+handle_cast(disconnected, _State) -> {noreply, #state{}};
+handle_cast({join, Channel}, State) ->
+    gen_tcp:send(State#state.sock, "JOIN " ++ Channel ++ "\n"),
+    {noreply, State}.
 
 handle_info(_Request, State) -> {noreply, State}.
 
@@ -81,6 +86,9 @@ handle_message(#irc_notice{server=S, type=T, message=M}, State) ->
         true -> do_login(State);
         _    -> ok
     end,
+    State;
+handle_message(#irc_privmsg{nick=N, user=U, channel=C, message=M}, State) ->
+    io:format("privmsg ~s(~s) ~s: ~s~n", [N, U, C, M]),
     State;
 handle_message(#irc_unknown{message=Msg}, State) ->
     io:format("unknown ~s~n",[Msg]),
