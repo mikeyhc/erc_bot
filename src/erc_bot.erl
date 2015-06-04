@@ -1,92 +1,101 @@
 -module(erc_bot).
 
+-include("irc_types.hrl").
+
 -behaviour(gen_server).
+-compile([export_all]).
 
--include("erc_bot.hrl").
+% general api
+-export([start_link/0, connect/3]).
 
-%% General API
--export([start_link/1]).
-
-%% Connection API
--export([connect/2, connect/3]).
-
-%% gen_server callbacks
+% gen_server callbacks
 -export([init/1, terminate/2, code_change/3]).
 -export([handle_call/3, handle_cast/2, handle_info/2]).
 
--define(REAL_NAME, "erc_bot").
-
--record(state, {connections=#{} :: map(binary(), {pid(), connection()}),
-                supervisor      :: pid()
-               }).
+-record(state, {sock,
+                pid,
+                nick}).
 
 %%%%%%%%%%%%%%%%%%%
-%%% General API %%%
+%%% general api %%%
 %%%%%%%%%%%%%%%%%%%
 
-start_link(SuperPid) ->
-    gen_server:start_link({local, erc_bot}, ?MODULE, SuperPid, []).
+start_link() -> gen_server:start_link({local, erc_bot}, ?MODULE, [], []).
 
-%%%%%%%%%%%%%%%%%%%%%%
-%%% Connection API %%%
-%%%%%%%%%%%%%%%%%%%%%%
-
-connect(Server, Nick) -> connect(Server, 6667, Nick).
-connect(Server, Port, Nick) ->
-    gen_server:call(erc_bot, {connect, Server, Port, Nick}).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%% state Record Functions %%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-set_connection_state(R, N, S) ->
-    Conns = R#state.connections,
-    NewConns =maps:update(N, S, Conns),
-    R#state{connections = NewConns}.
-
-
-%%%%%%%%%%%%%%%%%%%%%
-%%% IRC Functions %%%
-%%%%%%%%%%%%%%%%%%%%%
-
-do_connection(Super, Conn) ->
-    {ok, Pid} = supervisor:start_child(Super, [Conn]),
-    Pid.
-
-create_connection(Server, Port, Nick, State) ->
-    Conn = #connection{host = Server,
-                       port = Port,
-                       status = connecting,
-                       nick = Nick},
-    Pid = do_connection(State#state.supervisor, Conn),
-    NewConns = maps:put(Server, {Pid, Conn}, State#state.connections),
-    State#state{connections = NewConns}.
-
-reuse_connection(C=#connection{status=disconnected}, State) ->
-    NewState = set_connection_state(State, C, connecting),
-    do_connection(State#state.supervisor, C),
-    {ok, NewState};
-reuse_connection(_S, State) -> {{error, already_connected}, State}.
+connect(Host, Port, Nick) ->
+    gen_server:call(erc_bot, {connect, Host, Port, Nick}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%% gen_server Callbacks %%%
+%%% gen_server callbacks %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init(SuperPid) ->
-    {ok, #state{supervisor=SuperPid}}.
+init(_Args) -> {ok, #state{}}.
 terminate(_Reason, _State) -> ok.
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
-handle_call({connect, Server, Port, Nick}, _From, State) ->
-    case maps:find(Server, State#state.connections) of
-        error ->
-            NewState = create_connection(Server, Port, Nick, State),
-            {reply, ok, NewState};
-        {ok, Conn} ->
-            {Ret, NewState} = reuse_connection(Conn, State),
-            {reply, Ret, NewState}
+handle_call({connect, Host, Port, Nick}, _From, State) ->
+    case State#state.sock of
+        undefined ->
+            {Ret, NewState} = do_connect(Host, Port),
+            {reply, Ret, NewState#state{nick=Nick}};
+        _         -> {reply, {error, already_connected}, State}
     end;
-handle_call(get_state, _From, State) -> {reply, {ok, State}, State}.
+handle_call(get_state, _From, State) ->
+    {reply, State, State}.
 
-handle_cast(_Request, State) -> {no_reply, State}.
-handle_info(_Request, State) -> {no_reply, State}.
+handle_cast({ircmsg, Msg}, State) -> {noreply, handle_message(Msg, State)};
+handle_cast(disconnected, _State) -> {noreply, #state{}}.
+
+handle_info(_Request, State) -> {noreply, State}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%
+%%% helper functions %%%
+%%%%%%%%%%%%%%%%%%%%%%%%
+
+do_connect(Host, Port) ->
+    {ok, Sock} = gen_tcp:connect(Host, Port, [{active, false}]),
+    Pid = spawn_link(fun() -> listen_loop(Sock) end),
+    {ok, #state{sock=Sock, pid=Pid}}.
+
+listen_loop(Sock) ->
+    case gen_tcp:recv(Sock, 0) of
+        {ok, Msg} ->
+            MsgList = nl_split(Msg),
+            lists:foreach(fun parse_and_send/1, MsgList),
+            listen_loop(Sock);
+        {error, closed} ->
+            gen_server:cast(erc_bot, disconnected)
+    end.
+
+parse_and_send(Msg) ->
+    Parsed = irc_parser:parse_message(Msg),
+    gen_server:cast(erc_bot, {ircmsg, Parsed}).
+
+handle_message(#irc_ping{response=R}, State) ->
+    io:format("ping ~s~n", [R]),
+    gen_tcp:send(State#state.sock, "PONG " ++ R ++ "\n"),
+    State;
+handle_message(#irc_notice{server=S, type=T, message=M}, State) ->
+    io:format("notice ~s ~s: ~s~n", [S, T, M]),
+    case lists:prefix("*** No ident", M) of
+        true -> do_login(State);
+        _    -> ok
+    end,
+    State;
+handle_message(#irc_unknown{message=Msg}, State) ->
+    io:format("unknown ~s~n",[Msg]),
+    State.
+
+nl_split(List) ->
+    L = tl(lists:foldl(fun nl_split/2, [], List)),
+    lists:map(fun lists:reverse/1, L).
+
+nl_split(C, []) -> [[C]];
+nl_split($\n, L) -> [[]|L];
+nl_split(C, [H|T]) -> [[C|H]|T].
+
+do_login(#state{sock=Sock, nick=Nick}) ->
+    io:format("< NICK " ++ Nick ++ "~n"),
+    gen_tcp:send(Sock, "NICK " ++ Nick ++ "\n"),
+    io:format("< USER erc_bot 8 * : ERC Bot~n"),
+    gen_tcp:send(Sock, "USER erc_bot 8 * : ERC Bot\n").

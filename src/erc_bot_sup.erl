@@ -5,24 +5,25 @@
 %% API
 -export([start_link/0]).
 
-%% supervisor callbacks
+%% Supervisor callbacks
 -export([init/1]).
 
 %% Helper macro for declaring children of supervisor
 -define(CHILD(I, Type), {I, {I, start_link, []}, permanent, 5000, Type, [I]}).
 
 %%%%%%%%%%%%%%%%%%%%%
-%%% API Functions %%%
+%%% API functions %%%
 %%%%%%%%%%%%%%%%%%%%%
 
-start_link() -> supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+start_link() ->
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%% supervisor Callbacks %%%
+%%% Supervisor callbacks %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init([]) -> {ok, { {one_for_one, 5, 10},
-                   [ ?CHILD(conn_super, supervisor),
-                     {erc_bot, {erc_bot, start_link, [conn_super]},
-                      permanent, 5000, worker, [erc_bot]}
-                   ]}}.
+init([]) ->
+    {ok, { {one_for_one, 5, 10},
+           [ ?CHILD(erc_bot, worker)
+           ]} }.
+

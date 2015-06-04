@@ -10,5 +10,4 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 start(_StartType, _StartArgs) -> erc_bot_sup:start_link().
-
 stop(_State) -> ok.
